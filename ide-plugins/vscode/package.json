@@ -1,0 +1,197 @@
+{
+  "name": "picoclaw-synapse",
+  "displayName": "PicoClaw Synapse",
+  "description": "AI agent orchestration in your IDE. Run squads, automate tasks, and get AI assistance powered by Synapse.",
+  "version": "1.0.0",
+  "publisher": "synapse-ai",
+  "icon": "images/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Other",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "ai", "agent", "automation", "synapse", "picoclaw", "llm", "copilot"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "picoclaw.runSquad",
+        "title": "PicoClaw: Executar Squad",
+        "icon": "$(play)"
+      },
+      {
+        "command": "picoclaw.askAgent",
+        "title": "PicoClaw: Perguntar ao Agente",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "picoclaw.reviewCode",
+        "title": "PicoClaw: Revisar Código Selecionado",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "picoclaw.explainCode",
+        "title": "PicoClaw: Explicar Código",
+        "icon": "$(book)"
+      },
+      {
+        "command": "picoclaw.fixCode",
+        "title": "PicoClaw: Corrigir Código",
+        "icon": "$(wrench)"
+      },
+      {
+        "command": "picoclaw.generateTests",
+        "title": "PicoClaw: Gerar Testes",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "picoclaw.openDashboard",
+        "title": "PicoClaw: Abrir Dashboard",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "picoclaw.connect",
+        "title": "PicoClaw: Conectar ao Servidor",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "picoclaw.scheduleTask",
+        "title": "PicoClaw: Agendar Tarefa",
+        "icon": "$(calendar)"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "picoclaw.reviewCode",
+          "group": "picoclaw@1",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "picoclaw.explainCode",
+          "group": "picoclaw@2",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "picoclaw.fixCode",
+          "group": "picoclaw@3",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "picoclaw.generateTests",
+          "group": "picoclaw@4",
+          "when": "editorHasSelection"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "picoclaw.reviewCode",
+          "group": "navigation",
+          "when": "editorIsOpen"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "picoclaw",
+          "title": "PicoClaw Synapse",
+          "icon": "images/icon-small.svg"
+        }
+      ]
+    },
+    "views": {
+      "picoclaw": [
+        {
+          "id": "picoclaw.squads",
+          "name": "Squads",
+          "icon": "$(organization)"
+        },
+        {
+          "id": "picoclaw.tasks",
+          "name": "Tarefas Agendadas",
+          "icon": "$(calendar)"
+        },
+        {
+          "id": "picoclaw.memory",
+          "name": "Memória",
+          "icon": "$(database)"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "PicoClaw Synapse",
+      "properties": {
+        "picoclaw.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:8080",
+          "description": "URL do servidor PicoClaw local"
+        },
+        "picoclaw.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Chave de API para autenticação"
+        },
+        "picoclaw.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Conectar automaticamente ao iniciar o VS Code"
+        },
+        "picoclaw.language": {
+          "type": "string",
+          "default": "pt-BR",
+          "enum": ["pt-BR", "en-US", "es-ES"],
+          "description": "Idioma para respostas do agente"
+        },
+        "picoclaw.inlineCompletions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Habilitar sugestões de código inline (experimental)"
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "picoclaw.askAgent",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a"
+      },
+      {
+        "command": "picoclaw.reviewCode",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "picoclaw.fixCode",
+        "key": "ctrl+shift+f",
+        "mac": "cmd+shift+f",
+        "when": "editorHasSelection"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.22.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  }
+}
