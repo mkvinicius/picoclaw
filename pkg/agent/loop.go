@@ -56,6 +56,8 @@ type AgentLoop struct {
 	activeRequests sync.WaitGroup
 	// securityStack provides message-level filtering, rate limiting, and audit logging.
 	securityStack *security.SecurityStack
+	// authorizer enforces role-based tool permissions per sender.
+	authorizer *security.Authorizer
 	// Metrics collects observability data for this agent loop.
 	Metrics *metrics.Collector
 }
@@ -115,6 +117,9 @@ func NewAgentLoop(
 		fallback:    fallbackChain,
 		cmdRegistry: commands.NewRegistry(commands.BuiltinDefinitions()),
 		Metrics:     metrics.New(),
+		// DefaultAuthorizer grants owner-level to everyone — fully backwards
+		// compatible. Call SetAuthorizer to enable role restrictions.
+		authorizer: security.DefaultAuthorizer(),
 	}
 
 	// Initialize the security stack using the default agent's workspace.
@@ -537,6 +542,14 @@ func (al *AgentLoop) SetMediaStore(s media.MediaStore) {
 // SetTranscriber injects a voice transcriber for agent-level audio transcription.
 func (al *AgentLoop) SetTranscriber(t voice.Transcriber) {
 	al.transcriber = t
+}
+
+// SetAuthorizer replaces the role-based authorizer used to gate tool calls.
+// Call this after loading role config from config.json.
+func (al *AgentLoop) SetAuthorizer(a *security.Authorizer) {
+	al.mu.Lock()
+	al.authorizer = a
+	al.mu.Unlock()
 }
 
 // SetReloadFunc sets the callback function for triggering config reload.
@@ -1400,6 +1413,28 @@ func (al *AgentLoop) runLLMIteration(
 						"iteration": iteration,
 					})
 				al.Metrics.ToolCalls.Inc(tc.Name)
+
+				// Role-based permission check: verify the sender has the required
+				// privilege level for this tool before executing it.
+				al.mu.RLock()
+				auth := al.authorizer
+				al.mu.RUnlock()
+				if auth != nil && !auth.CanUseTool(opts.SenderID, tc.Name) {
+					role := auth.RoleOf(opts.SenderID)
+					agentResults[idx].result = &tools.ToolResult{
+						ForLLM:  fmt.Sprintf("Permission denied: your role (%s) is not allowed to use the '%s' tool.", role, tc.Name),
+						ForUser: fmt.Sprintf("⛔ Permission denied: you don't have access to '%s'.", tc.Name),
+						IsError: true,
+					}
+					al.Metrics.SecurityBlocked.Inc()
+					logger.WarnCF("agent", "Tool call blocked by role-based authorizer",
+						map[string]any{
+							"tool":      tc.Name,
+							"sender_id": opts.SenderID,
+							"role":      role,
+						})
+					return
+				}
 
 				// Send tool feedback to chat channel if enabled
 				if al.cfg.Agents.Defaults.IsToolFeedbackEnabled() && opts.Channel != "" {
