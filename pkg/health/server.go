@@ -13,6 +13,7 @@ import (
 
 type Server struct {
 	server     *http.Server
+	mux        *http.ServeMux
 	mu         sync.RWMutex
 	ready      bool
 	checks     map[string]Check
@@ -37,6 +38,7 @@ type StatusResponse struct {
 func NewServer(host string, port int) *Server {
 	mux := http.NewServeMux()
 	s := &Server{
+		mux:       mux,
 		ready:     false,
 		checks:    make(map[string]Check),
 		startTime: time.Now(),
@@ -204,6 +206,24 @@ func (s *Server) RegisterOnMux(mux *http.ServeMux) {
 	mux.HandleFunc("/health", s.healthHandler)
 	mux.HandleFunc("/ready", s.readyHandler)
 	mux.HandleFunc("/reload", s.reloadHandler)
+}
+
+// MuxRegistrar is implemented by any service that can mount its HTTP endpoints
+// onto a ServeMux (e.g. FleetManager, metrics.Collector).
+type MuxRegistrar interface {
+	RegisterOnMux(mux *http.ServeMux)
+}
+
+// RegisterFleetManager mounts the fleet management HTTP endpoints on the
+// server's internal mux so they are served alongside /health and /ready.
+func (s *Server) RegisterFleetManager(fm MuxRegistrar) {
+	fm.RegisterOnMux(s.mux)
+}
+
+// RegisterMetrics mounts the metrics HTTP endpoints (/metrics,
+// /api/metrics/summary) on the server's internal mux.
+func (s *Server) RegisterMetrics(mc MuxRegistrar) {
+	mc.RegisterOnMux(s.mux)
 }
 
 func statusString(ok bool) string {

@@ -26,6 +26,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/constants"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
+	"github.com/sipeed/picoclaw/pkg/metrics"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/security"
@@ -55,6 +56,8 @@ type AgentLoop struct {
 	activeRequests sync.WaitGroup
 	// securityStack provides message-level filtering, rate limiting, and audit logging.
 	securityStack *security.SecurityStack
+	// Metrics collects observability data for this agent loop.
+	Metrics *metrics.Collector
 }
 
 // processOptions configures how a message is processed
@@ -111,6 +114,7 @@ func NewAgentLoop(
 		summarizing: sync.Map{},
 		fallback:    fallbackChain,
 		cmdRegistry: commands.NewRegistry(commands.BuiltinDefinitions()),
+		Metrics:     metrics.New(),
 	}
 
 	// Initialize the security stack using the default agent's workspace.
@@ -327,6 +331,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 
 				response, err := al.processMessage(ctx, msg)
 				if err != nil {
+					al.Metrics.MessageErrors.Inc()
 					response = fmt.Sprintf("Error processing message: %v", err)
 				}
 
@@ -344,6 +349,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 						}
 					}
 					if !alreadySent {
+						al.Metrics.MessagesOut.Inc()
 						al.bus.PublishOutbound(ctx, bus.OutboundMessage{
 							Channel: msg.Channel,
 							ChatID:  msg.ChatID,
@@ -732,6 +738,13 @@ func (al *AgentLoop) ProcessHeartbeat(
 }
 
 func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {
+	// Track end-to-end latency and message counters.
+	msgStart := time.Now()
+	al.Metrics.MessagesIn.Inc()
+	defer func() {
+		al.Metrics.MessageLatency.Observe(time.Since(msgStart))
+	}()
+
 	// Add message preview to log (show full content for error messages)
 	var logContent string
 	if strings.Contains(msg.Content, "Error:") || strings.Contains(msg.Content, "error") {
@@ -782,6 +795,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 					"category":   verdict.Category,
 					"threat":     verdict.ThreatLevel,
 				})
+			al.Metrics.SecurityBlocked.Inc()
 			return "Your message was blocked by the security filter: " + verdict.Reason, nil
 		}
 	}
@@ -1142,6 +1156,7 @@ func (al *AgentLoop) runLLMIteration(
 		// Call LLM with fallback chain if multiple candidates are configured.
 		var response *providers.LLMResponse
 		var err error
+		llmStart := time.Now()
 
 		llmOpts := map[string]any{
 			"max_tokens":       agent.MaxTokens,
@@ -1259,7 +1274,10 @@ func (al *AgentLoop) runLLMIteration(
 			break
 		}
 
+		al.Metrics.LLMCalls.Inc()
+		al.Metrics.LLMLatency.Observe(time.Since(llmStart))
 		if err != nil {
+			al.Metrics.LLMErrors.Inc()
 			logger.ErrorCF("agent", "LLM call failed",
 				map[string]any{
 					"agent_id":  agent.ID,
@@ -1268,6 +1286,10 @@ func (al *AgentLoop) runLLMIteration(
 					"error":     err.Error(),
 				})
 			return "", iteration, fmt.Errorf("LLM call failed after retries: %w", err)
+		}
+		if response != nil && response.Usage != nil {
+			al.Metrics.TokensIn.Add(int64(response.Usage.PromptTokens))
+			al.Metrics.TokensOut.Add(int64(response.Usage.CompletionTokens))
 		}
 
 		go al.handleReasoning(
@@ -1377,6 +1399,7 @@ func (al *AgentLoop) runLLMIteration(
 						"tool":      tc.Name,
 						"iteration": iteration,
 					})
+				al.Metrics.ToolCalls.Inc(tc.Name)
 
 				// Send tool feedback to chat channel if enabled
 				if al.cfg.Agents.Defaults.IsToolFeedbackEnabled() && opts.Channel != "" {
@@ -1452,6 +1475,9 @@ func (al *AgentLoop) runLLMIteration(
 
 		// Process results in original order (send to user, save to session)
 		for _, r := range agentResults {
+			if r.result.IsError {
+				al.Metrics.ToolErrors.Inc(r.tc.Name)
+			}
 			// Send ForUser content to user immediately if not Silent
 			if !r.result.Silent && r.result.ForUser != "" && opts.SendResponse {
 				al.bus.PublishOutbound(ctx, bus.OutboundMessage{

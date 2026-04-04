@@ -32,6 +32,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/cron"
 	"github.com/sipeed/picoclaw/pkg/devices"
+	"github.com/sipeed/picoclaw/pkg/fleet"
 	"github.com/sipeed/picoclaw/pkg/health"
 	"github.com/sipeed/picoclaw/pkg/heartbeat"
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -55,6 +56,7 @@ type services struct {
 	ChannelManager   *channels.Manager
 	DeviceService    *devices.Service
 	HealthServer     *health.Server
+	FleetManager     *fleet.FleetManager
 	manualReloadChan chan struct{}
 	reloading        atomic.Bool
 }
@@ -319,6 +321,33 @@ func setupAndStartServices(
 		logger.ErrorCF("device", "Error starting device service", map[string]any{"error": err.Error()})
 	} else if cfg.Devices.Enabled {
 		fmt.Println("✓ Device event service started")
+	}
+
+	// Fleet manager: tracks this node and any remote nodes.
+	fleetMgr, fleetErr := fleet.NewFleetManager(fleet.DefaultFleetConfig(cfg.WorkspacePath()))
+	if fleetErr != nil {
+		logger.WarnCF("fleet", "Fleet manager init failed; fleet tracking disabled",
+			map[string]any{"error": fleetErr.Error()})
+	} else {
+		runningServices.FleetManager = fleetMgr
+		fleetMgr.Start(context.Background())
+		// Self-register this node in the fleet.
+		fleetMgr.Register(fleet.NodeInfo{
+			ID:        cfg.WorkspacePath(), // unique per workspace
+			Name:      "local",
+			Status:    fleet.NodeOnline,
+			HealthURL: fmt.Sprintf("http://%s:%d/health", cfg.Gateway.Host, cfg.Gateway.Port),
+		})
+		// Mount fleet HTTP endpoints on the health server's mux.
+		runningServices.HealthServer.RegisterFleetManager(fleetMgr)
+		fmt.Println("✓ Fleet manager started")
+	}
+
+	// Metrics: mount Prometheus + JSON endpoints.
+	if agentLoop.Metrics != nil {
+		runningServices.HealthServer.RegisterMetrics(agentLoop.Metrics)
+		fmt.Printf("✓ Metrics available at http://%s:%d/metrics and /api/metrics/summary\n",
+			cfg.Gateway.Host, cfg.Gateway.Port)
 	}
 
 	return runningServices, nil
