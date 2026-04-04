@@ -15,6 +15,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/constants"
+	"github.com/sipeed/picoclaw/pkg/security"
 )
 
 type ExecTool struct {
@@ -26,6 +27,16 @@ type ExecTool struct {
 	allowedPathPatterns []*regexp.Regexp
 	restrictToWorkspace bool
 	allowRemote         bool
+	// securityStack provides semantic analysis of commands as a second layer
+	// on top of the regex-based deny patterns.
+	securityStack *security.SecurityStack
+}
+
+// SetSecurityStack injects the shared SecurityStack into the ExecTool so that
+// every shell command passes through the semantic firewall in addition to the
+// existing regex-based deny patterns.
+func (t *ExecTool) SetSecurityStack(s *security.SecurityStack) {
+	t.securityStack = s
 }
 
 var (
@@ -203,6 +214,20 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult
 		channel = strings.TrimSpace(channel)
 		if channel == "" || !constants.IsInternalChannel(channel) {
 			return ErrorResult("exec is restricted to internal channels")
+		}
+	}
+
+	// Semantic firewall: run the command through the 7-layer security stack
+	// before the regex-based deny patterns. This catches obfuscated variants
+	// (hex escapes, homoglyphs, etc.) that regex alone would miss.
+	if t.securityStack != nil {
+		sessionID, _ := args["__session_id"].(string)
+		if sessionID == "" {
+			sessionID = "exec-tool"
+		}
+		result := t.securityStack.CheckCommand(sessionID, command)
+		if !result.Allowed {
+			return ErrorResult("Command blocked by security stack: " + result.Reason)
 		}
 	}
 

@@ -28,6 +28,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
+	"github.com/sipeed/picoclaw/pkg/security"
 	"github.com/sipeed/picoclaw/pkg/skills"
 	"github.com/sipeed/picoclaw/pkg/state"
 	"github.com/sipeed/picoclaw/pkg/tools"
@@ -52,6 +53,8 @@ type AgentLoop struct {
 	reloadFunc     func() error
 	// Track active requests for safe provider cleanup
 	activeRequests sync.WaitGroup
+	// securityStack provides message-level filtering, rate limiting, and audit logging.
+	securityStack *security.SecurityStack
 }
 
 // processOptions configures how a message is processed
@@ -108,6 +111,31 @@ func NewAgentLoop(
 		summarizing: sync.Map{},
 		fallback:    fallbackChain,
 		cmdRegistry: commands.NewRegistry(commands.BuiltinDefinitions()),
+	}
+
+	// Initialize the security stack using the default agent's workspace.
+	// Failures are non-fatal: the agent still runs, but security events won't be audited.
+	if defaultAgent != nil {
+		secStack, err := security.NewSecurityStack(security.DefaultSecurityStackConfig(defaultAgent.Workspace))
+		if err != nil {
+			logger.WarnCF("agent", "Security stack init failed; running without enhanced security",
+				map[string]any{"error": err.Error()})
+		} else {
+			al.securityStack = secStack
+			// Inject the security stack into every agent's exec tool so that
+			// shell commands also pass through the semantic firewall.
+			for _, agentID := range registry.ListAgentIDs() {
+				a, ok := registry.GetAgent(agentID)
+				if !ok {
+					continue
+				}
+				if execTool, ok := a.Tools.Get("exec"); ok {
+					if et, ok := execTool.(*tools.ExecTool); ok {
+						et.SetSecurityStack(secStack)
+					}
+				}
+			}
+		}
 	}
 
 	return al
@@ -734,6 +762,28 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	// Route system messages to processSystemMessage
 	if msg.Channel == "system" {
 		return al.processSystemMessage(ctx, msg)
+	}
+
+	// Security check: run the message through the semantic firewall and rate limiter
+	// before it reaches the LLM. System-originated messages are trusted and exempt.
+	if al.securityStack != nil && msg.Content != "" {
+		sessionID := msg.SessionKey
+		if sessionID == "" {
+			sessionID = msg.SenderID
+		}
+		verdict := al.securityStack.CheckMessage(sessionID, msg.Content)
+		if !verdict.Allowed {
+			logger.WarnCF("agent", "Message blocked by security stack",
+				map[string]any{
+					"session_id": sessionID,
+					"channel":    msg.Channel,
+					"sender_id":  msg.SenderID,
+					"reason":     verdict.Reason,
+					"category":   verdict.Category,
+					"threat":     verdict.ThreatLevel,
+				})
+			return "Your message was blocked by the security filter: " + verdict.Reason, nil
+		}
 	}
 
 	route, agent, routeErr := al.resolveMessageRoute(msg)
